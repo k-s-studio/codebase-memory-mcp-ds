@@ -1,0 +1,9 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+*.swp
+
+# Timestamped backups install.ps1 writes before editing config
+# (normally land in ~/.claude, but ignore here in case it's run from a checkout)
+*.bak-*

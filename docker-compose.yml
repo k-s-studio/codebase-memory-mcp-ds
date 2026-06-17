@@ -1,0 +1,21 @@
+services:
+  codebase-memory-ds:
+    build:
+      context: .
+      args:
+        CBM_VERSION: latest
+    image: codebase-memory-ds:ui-local
+    container_name: codebase-memory-ds
+    # 3D 知識圖譜 UI。容器內 socat 監聽 0.0.0.0:9749 並轉到 UI 的 loopback port，
+    # 開瀏覽器到 http://localhost:9749 即可。
+    ports:
+      - "9749:9749"
+    volumes:
+      # 索引快取持久化，避免每次重建 container 都要重新索引
+      - cbm-ds-cache:/home/cbm/.cache/codebase-memory-mcp
+      # 要索引的原始碼目錄（唯讀掛載即可，index_repository 不需要寫入來源）。
+      # 路徑由 install.ps1 透過 CBM_WORKSPACE 注入，預設 C:/Workspace。
+      - ${CBM_WORKSPACE:-C:/Workspace}:/workspace:ro
+
+volumes:
+  cbm-ds-cache:

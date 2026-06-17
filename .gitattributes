@@ -1,0 +1,6 @@
+# Normalize to LF in the repo; check out LF everywhere by default so the shell
+# scripts and extensionless hooks keep a valid shebang inside the Linux container.
+* text=auto eol=lf
+
+# PowerShell stays CRLF on checkout (Windows-native; harmless to PS either way).
+*.ps1 text eol=crlf

@@ -1,0 +1,11 @@
+#!/bin/bash
+# codebase-memory-ds search augmenter (Claude Code PreToolUse).
+# Docker edition: routes the upstream `hook-augment` call to the container
+# instead of a local binary.
+#
+# Despite the legacy "gate" name this NEVER blocks a tool call - it only adds
+# graph context. Any failure is silent (exit 0, no output), so a stopped
+# container or missing docker never breaks Grep/Glob.
+CONTAINER="${CBM_DS_CONTAINER:-codebase-memory-ds}"
+docker exec -i "$CONTAINER" codebase-memory-mcp --ui=false hook-augment 2>/dev/null
+exit 0
