@@ -262,7 +262,7 @@ Write-Host ""
 Write-Host "codebase-memory-mcp-ds installer (Docker edition)" -ForegroundColor Green
 Write-Host "  container : $ContainerName"
 Write-Host "  version   : $Version  (upstream release fetched at build time)"
-Write-Host "  workspace : $WorkspacePath  (mounted read-only at /workspace)"
+Write-Host "  workspace : $WorkspacePath  (mounted read-only at /codebase-memory-mcp-ds)"
 Write-Host "  cleanup   : $((-not $SkipCleanup))"
 Write-Host ""
 
@@ -393,6 +393,6 @@ Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  - Restart Claude Code so it reloads skills / hooks / MCP config."
 Write-Host "  - The container starts with an EMPTY index. Re-index your repos, e.g.:"
-Write-Host "      ask the agent to run index_repository(repo_path=\"/workspace/<your-project>\")"
+Write-Host "      ask the agent to run index_repository(repo_path=\"/codebase-memory-mcp-ds/<your-project>\")"
 Write-Host "  - 3D graph UI: http://localhost:9749"
 Write-Host ""
