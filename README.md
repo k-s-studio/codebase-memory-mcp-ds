@@ -22,33 +22,43 @@ Invoke-WebRequest `
   -Uri https://raw.githubusercontent.com/k-s-studio/codebase-memory-mcp-ds/main/install.ps1 `
   -OutFile install.ps1
 
-.\install.ps1 -WorkspacePath D:/code
+# Choose one host folder Docker may read. This is usually the parent folder
+# where you keep all projects. The default is C:/Workspace, mounted read-only
+# as /workspace.
+.\install.ps1
+
+# If your projects are somewhere else:
+.\install.ps1 -WorkspacePath C:/path/to/projects
 ```
 
 ```powershell
 # Pin an upstream release instead of using latest
-.\install.ps1 -WorkspacePath D:/code -Version v0.8.1
+.\install.ps1 -Version v0.8.1
 ```
 
 ```powershell
 # Manual Docker flow
-$env:CBM_WORKSPACE = "D:/code"
+$env:CBM_WORKSPACE = "C:/Workspace"
 docker compose build --build-arg CBM_VERSION=latest
 docker compose up -d
 ```
 
 ```text
 UI: http://localhost:9749
-MCP repo path example: /codebase-memory-mcp-ds/my-repo
+Host source root example: C:/Workspace
+Container source root: /workspace
+MCP repo path example: /workspace/my-repo
 ```
 
 Restart your agent after installation so it reloads MCP config, hooks, and the
 `codebase-memory-ds` skill.
 
+`-WorkspacePath` and `CBM_WORKSPACE` are host paths. MCP tools must use paths
+under the container mount `/workspace`.
+
 ## Known Limitations / Notes
 
-- The container sees your source tree at `/codebase-memory-mcp-ds`.
-  `/workspace` is obsolete.
+- The container sees your selected host source root at `/workspace`.
 - The workspace bind mount is read-only by default.
 - Only one host source root is mounted by the default compose file. Put repos
   under that root, or edit `docker-compose.yml`.
@@ -64,7 +74,7 @@ Restart your agent after installation so it reloads MCP config, hooks, and the
 ## Cleanup / Rollback
 
 ```powershell
-$env:CBM_WORKSPACE = "D:/code"
+$env:CBM_WORKSPACE = "C:/Workspace"
 docker compose down
 docker compose down -v
 docker image rm codebase-memory-ds:ui-local
@@ -96,7 +106,7 @@ Agent MCP client
   -> docker exec -i codebase-memory-ds codebase-memory-mcp --ui=false
 
 Host source root
-  -> /codebase-memory-mcp-ds:ro
+  -> /workspace:ro
 
 Named cache volume
   -> /home/cbm/.cache/codebase-memory-mcp
@@ -111,7 +121,7 @@ Named cache volume
   exposes it through `socat` on `0.0.0.0:9749`.
 - `docker-compose.yml`: defines the `codebase-memory-ds` service, image,
   container name, UI port, cache volume, and read-only workspace mount at
-  `/codebase-memory-mcp-ds`.
+  `/workspace`.
 - `install.ps1`: Windows installer. It resolves or downloads this repo, sets
   `CBM_WORKSPACE`, runs `docker compose build` and `up -d`, installs the
   `codebase-memory-ds` skill and hooks, registers the MCP server through

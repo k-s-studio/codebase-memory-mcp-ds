@@ -67,7 +67,7 @@ RUN mkdir -p "$CBM_CACHE_DIR" && chown -R cbm:cbm /home/cbm
 
 USER cbm
 # 與 docker-compose.yml 的 bind-mount target 一致（你的原始碼會唯讀掛在這裡）
-WORKDIR /codebase-memory-mcp-ds
+WORKDIR /workspace
 
 # 3D 知識圖譜 UI（透過 entrypoint 的 socat 轉出）
 EXPOSE 9749

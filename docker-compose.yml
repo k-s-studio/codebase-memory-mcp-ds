@@ -13,11 +13,11 @@ services:
     volumes:
       # 索引快取持久化，避免每次重建 container 都要重新索引
       - cbm-ds-cache:/home/cbm/.cache/codebase-memory-mcp
-      # 你要索引的原始碼根目錄，唯讀掛載到容器內的 /codebase-memory-mcp-ds（index_repository 只讀不寫）。
+      # 你要索引的原始碼根目錄，唯讀掛載到容器內的 /workspace（index_repository 只讀不寫）。
       # 必填、沒有預設值：install.ps1 會以 -WorkspacePath 自動注入；手動 compose 請先自行設定，例如
-      #   PowerShell:  $env:CBM_WORKSPACE = "D:/code"
+      #   PowerShell:  $env:CBM_WORKSPACE = "C:/Workspace"
       # 沒設會直接報錯，不會偷偷掛一個寫死的路徑。
-      - ${CBM_WORKSPACE:?set CBM_WORKSPACE to your source-code root, e.g. D:/code}:/codebase-memory-mcp-ds:ro
+      - ${CBM_WORKSPACE:?set CBM_WORKSPACE to your source-code root, e.g. C:/Workspace}:/workspace:ro
 
 volumes:
   cbm-ds-cache:

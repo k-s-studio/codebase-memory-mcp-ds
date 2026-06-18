@@ -22,8 +22,9 @@
 # coexists with (or cleanly replaces) an upstream local install.
 #
 # Usage:
-#   .\install.ps1                              # from a repo checkout, default workspace C:/Workspace
-#   .\install.ps1 -WorkspacePath D:/code       # index a different source tree
+#   .\install.ps1                              # from a repo checkout, exposes C:/Workspace to Docker
+#   .\install.ps1 -WorkspacePath C:/path/to/projects
+#                                               # expose a different source root to Docker
 #   .\install.ps1 -SkipCleanup                 # keep the old upstream install
 #   .\install.ps1 -SkipBuild                   # only (re)wire agents, don't touch docker
 #   .\install.ps1 -Download                    # force download from GitHub even in a checkout
@@ -262,7 +263,7 @@ Write-Host ""
 Write-Host "codebase-memory-mcp-ds installer (Docker edition)" -ForegroundColor Green
 Write-Host "  container : $ContainerName"
 Write-Host "  version   : $Version  (upstream release fetched at build time)"
-Write-Host "  workspace : $WorkspacePath  (mounted read-only at /codebase-memory-mcp-ds)"
+Write-Host "  workspace : $WorkspacePath  (mounted read-only at /workspace)"
 Write-Host "  cleanup   : $((-not $SkipCleanup))"
 Write-Host ""
 
@@ -393,6 +394,6 @@ Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  - Restart Claude Code so it reloads skills / hooks / MCP config."
 Write-Host "  - The container starts with an EMPTY index. Re-index your repos, e.g.:"
-Write-Host "      ask the agent to run index_repository(repo_path=\"/codebase-memory-mcp-ds/<your-project>\")"
+Write-Host "      ask the agent to run index_repository(repo_path=\"/workspace/<your-project>\")"
 Write-Host "  - 3D graph UI: http://localhost:9749"
 Write-Host ""
