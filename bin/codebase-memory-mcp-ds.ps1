@@ -11,8 +11,9 @@ function Write-Err {
 
 function Load-Config {
     $defaults = [pscustomobject]@{
-        containerName      = "codebase-memory-ds"
-        imageName          = "codebase-memory-ds:ui-local"
+        containerName      = "codebase-memory-mcp-ds"
+        composeProjectName = "codebase-memory-mcp-ds"
+        imageName          = "codebase-memory-mcp-ds:ui-local"
         binInContainer     = "codebase-memory-mcp"
         composeDir         = ""
         workspaceHost      = "C:/Workspace"
@@ -145,9 +146,11 @@ function Invoke-Compose {
 
     $oldWorkspace = $env:CBM_WORKSPACE
     $oldUiPort = $env:CBM_UI_PORT
+    $oldComposeProjectName = $env:COMPOSE_PROJECT_NAME
     try {
         $env:CBM_WORKSPACE = $Cfg.workspaceHost
         $env:CBM_UI_PORT = [string](Get-UiPort)
+        $env:COMPOSE_PROJECT_NAME = $Cfg.composeProjectName
         Push-Location $Cfg.composeDir
         try {
             & docker compose @ComposeArgs
@@ -158,6 +161,7 @@ function Invoke-Compose {
     } finally {
         $env:CBM_WORKSPACE = $oldWorkspace
         $env:CBM_UI_PORT = $oldUiPort
+        $env:COMPOSE_PROJECT_NAME = $oldComposeProjectName
     }
 }
 
@@ -263,6 +267,7 @@ function Show-Status {
 
     Write-Host "codebase-memory-mcp-ds status"
     Write-Host "  config      : $ConfigPath"
+    Write-Host "  compose     : $($Cfg.composeProjectName)"
     Write-Host "  container   : $($Cfg.containerName)"
     Write-Host "  image       : $($Cfg.imageName)"
     Write-Host "  workspace   : $($Cfg.workspaceHost) -> $($Cfg.workspaceContainer)"

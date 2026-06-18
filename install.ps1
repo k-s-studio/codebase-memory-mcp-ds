@@ -20,8 +20,9 @@
 #      replace it, pass -RemoveLegacy to remove the legacy container, skill,
 #      hooks, MCP entries, local .exe, and PATH entry.
 #
-# Everything host-facing is namespaced `codebase-memory-ds` / `cbm-ds-*` so it
-# coexists with (or cleanly replaces) an upstream local install.
+# Docker and the host command use `codebase-memory-mcp-ds`; agent-facing skill,
+# MCP server, and hook resources keep the shorter `codebase-memory-ds` /
+# `cbm-ds-*` names so they remain distinct from upstream `codebase-memory-mcp`.
 #
 # Usage:
 #   .\install.ps1                              # from a repo checkout, exposes C:/Workspace to Docker
@@ -51,7 +52,9 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
 
 # ---- names (new, host-facing) ----
-$ContainerName = "codebase-memory-ds"
+$ComposeProjectName = "codebase-memory-mcp-ds"
+$ContainerName = "codebase-memory-mcp-ds"
+$PreviousDsContainer = "codebase-memory-ds"
 $BinInContainer = "codebase-memory-mcp"   # internal binary name inside the image (unchanged)
 $McpName       = "codebase-memory-ds"
 $SkillName     = "codebase-memory-ds"
@@ -360,6 +363,7 @@ $legacyMode = if ($RemoveLegacy) { "remove upstream/local install" } else { "pre
 
 Write-Host ""
 Write-Host "codebase-memory-mcp-ds installer (Docker edition)" -ForegroundColor Green
+Write-Host "  compose   : $ComposeProjectName"
 Write-Host "  container : $ContainerName"
 Write-Host "  version   : $Version  (upstream release fetched at build time)"
 Write-Host "  workspace : $WorkspacePath  (mounted read-only at /workspace)"
@@ -411,6 +415,11 @@ foreach ($p in @($skillSrc, (Join-Path $hookSrc "cbm-ds-code-discovery-gate"), (
 
 # ---------- 2. build + up ----------
 if (-not $SkipBuild) {
+    if ($PreviousDsContainer -ne $ContainerName -and (Test-Container $PreviousDsContainer)) {
+        Write-Step "Removing previous DS container '$PreviousDsContainer' (renamed to '$ContainerName')"
+        docker rm -f $PreviousDsContainer | Out-Null
+    }
+
     if ($RemoveLegacy -and (Test-Container $OldContainer)) {
         Write-Step "Removing legacy container '$OldContainer'"
         docker rm -f $OldContainer | Out-Null
@@ -436,14 +445,17 @@ if (-not $SkipBuild) {
     Write-Step "docker compose build (fetches upstream UI binary, version=$Version)"
     Push-Location $src
     try {
+        $oldComposeProjectName = $env:COMPOSE_PROJECT_NAME
         $env:CBM_WORKSPACE = $WorkspacePath
         $env:CBM_UI_PORT = [string]$resolvedUiPort
+        $env:COMPOSE_PROJECT_NAME = $ComposeProjectName
         docker compose build --build-arg CBM_VERSION=$Version
         if ($LASTEXITCODE -ne 0) { throw "docker compose build failed" }
         Write-Step "docker compose up -d (UI host port=$resolvedUiPort)"
         docker compose up -d
         if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
     } finally {
+        $env:COMPOSE_PROJECT_NAME = $oldComposeProjectName
         Pop-Location
     }
 
@@ -481,7 +493,8 @@ Copy-Item (Join-Path $binSrc "$CliName.ps1") $CliInstallDir -Force
 Copy-Item (Join-Path $binSrc "$CliName.cmd") $CliInstallDir -Force
 $cliConfig = [pscustomobject]@{
     containerName      = $ContainerName
-    imageName          = "codebase-memory-ds:ui-local"
+    composeProjectName = $ComposeProjectName
+    imageName          = "codebase-memory-mcp-ds:ui-local"
     binInContainer     = $BinInContainer
     composeDir         = $src
     workspaceHost      = $WorkspacePath

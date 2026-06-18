@@ -115,7 +115,7 @@ as `--ui=true --port=9749`. Use `install.ps1` for host agent setup and
 $env:CBM_WORKSPACE = "C:/Workspace"
 docker compose down
 docker compose down -v
-docker image rm codebase-memory-ds:ui-local
+docker image rm codebase-memory-mcp-ds:ui-local
 ```
 
 ```powershell
@@ -143,7 +143,7 @@ Host browser
 
 Agent MCP client
   -> codebase-memory-mcp-ds mcp
-  -> docker exec -i codebase-memory-ds codebase-memory-mcp --ui=false
+  -> docker exec -i codebase-memory-mcp-ds codebase-memory-mcp --ui=false
 
 Host source root
   -> /workspace:ro
@@ -159,10 +159,10 @@ Named cache volume
 - `docker-entrypoint.sh`: starts the upstream binary with `--ui=true` on an
   internal loopback port, keeps stdin open so the UI process stays alive, and
   exposes it through `socat` on `0.0.0.0:9749` inside the container.
-- `docker-compose.yml`: defines the `codebase-memory-ds` service, image,
-  container name, host UI port, cache volume, and read-only workspace mount at
-  `/workspace`. The host UI port defaults to 9749 and can be set with
-  `CBM_UI_PORT`.
+- `docker-compose.yml`: fixes the Docker Compose project, service, container,
+  and image names to `codebase-memory-mcp-ds`, then defines the host UI port,
+  cache volume, and read-only workspace mount at `/workspace`. The host UI port
+  defaults to 9749 and can be set with `CBM_UI_PORT`.
 - `install.ps1`: Windows installer. It resolves or downloads this repo, sets
   `CBM_WORKSPACE` and `CBM_UI_PORT`, runs `docker compose build` and `up -d`,
   installs the `codebase-memory-ds` skill, hooks, and host command, registers
