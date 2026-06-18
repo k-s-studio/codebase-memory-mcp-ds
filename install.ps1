@@ -9,12 +9,13 @@
 #   1. Get the repo (Dockerfile + compose). Either a local checkout next to this
 #      script, or downloaded from GitHub.
 #   2. `docker compose build` + `up -d`. The image fetches the upstream UI binary
-#      at build time (see Dockerfile); nothing is installed on the host.
+#      at build time (see Dockerfile); no upstream binary is installed on the host.
 #   3. Wire Claude Code / agents to the *container*:
-#        - MCP server  -> `docker exec -i codebase-memory-ds codebase-memory-mcp --ui=false`
+#        - MCP server  -> `codebase-memory-mcp-ds mcp`
 #        - PreToolUse hook (graph augment) -> routed through `docker exec`
 #        - SessionStart reminder hook (static text)
 #        - skill installed under the name `codebase-memory-ds`
+#        - host wrapper command installed as `codebase-memory-mcp-ds`
 #   4. Preserve any upstream/local install by default. If you really want to
 #      replace it, pass -RemoveLegacy to remove the legacy container, skill,
 #      hooks, MCP entries, local .exe, and PATH entry.
@@ -54,6 +55,9 @@ $ContainerName = "codebase-memory-ds"
 $BinInContainer = "codebase-memory-mcp"   # internal binary name inside the image (unchanged)
 $McpName       = "codebase-memory-ds"
 $SkillName     = "codebase-memory-ds"
+$CliName       = "codebase-memory-mcp-ds"
+$CliInstallDir = Join-Path $env:LOCALAPPDATA "Programs\codebase-memory-mcp-ds"
+$CliConfigPath = Join-Path $CliInstallDir "config.json"
 
 # ---- names (legacy upstream/local install; preserved unless -RemoveLegacy) ----
 $OldContainer  = "codebase-memory-mcp"
@@ -370,6 +374,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 
 # ---------- 1. resolve source dir ----------
 $src = $null
+$downloadedSource = $false
 if ($SourceDir) {
     $src = (Resolve-Path $SourceDir).Path
 } elseif ((-not $Download) -and $PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "docker-compose.yml"))) {
@@ -385,12 +390,22 @@ if ($SourceDir) {
     $extracted = Get-ChildItem -Path $tmp -Directory | Where-Object { $_.Name -like "codebase-memory-mcp-ds-*" } | Select-Object -First 1
     if (-not $extracted) { throw "could not find extracted repo directory under $tmp" }
     $src = $extracted.FullName
+    $downloadedSource = $true
+}
+if ($downloadedSource) {
+    $stableSrc = Join-Path $CliInstallDir "source"
+    New-Item -ItemType Directory -Path $CliInstallDir -Force | Out-Null
+    if (Test-Path $stableSrc) { Remove-Item $stableSrc -Recurse -Force }
+    Copy-Item $src $stableSrc -Recurse -Force
+    $src = $stableSrc
+    Write-Note "cached source for future update/start commands: $src"
 }
 Write-Note "source: $src"
 
 $skillSrc = Join-Path $src "agent\skills\$SkillName"
 $hookSrc  = Join-Path $src "agent\hooks"
-foreach ($p in @($skillSrc, (Join-Path $hookSrc "cbm-ds-code-discovery-gate"), (Join-Path $hookSrc "cbm-ds-session-reminder"))) {
+$binSrc   = Join-Path $src "bin"
+foreach ($p in @($skillSrc, (Join-Path $hookSrc "cbm-ds-code-discovery-gate"), (Join-Path $hookSrc "cbm-ds-session-reminder"), (Join-Path $binSrc "$CliName.ps1"), (Join-Path $binSrc "$CliName.cmd"))) {
     if (-not (Test-Path $p)) { throw "missing required file in source: $p" }
 }
 
@@ -460,11 +475,40 @@ Copy-Item (Join-Path $hookSrc "cbm-ds-session-reminder")    $HooksDir -Force
 Write-Step "Registering hooks in settings.json"
 Wire-Hooks -Path $SettingsJson
 
-$mcpDef = [pscustomobject]@{
-    command = "docker"
-    args    = @("exec", "-i", $ContainerName, $BinInContainer, "--ui=false")
+Write-Step "Installing host command -> $CliInstallDir\$CliName.cmd"
+New-Item -ItemType Directory -Path $CliInstallDir -Force | Out-Null
+Copy-Item (Join-Path $binSrc "$CliName.ps1") $CliInstallDir -Force
+Copy-Item (Join-Path $binSrc "$CliName.cmd") $CliInstallDir -Force
+$cliConfig = [pscustomobject]@{
+    containerName      = $ContainerName
+    imageName          = "codebase-memory-ds:ui-local"
+    binInContainer     = $BinInContainer
+    composeDir         = $src
+    workspaceHost      = $WorkspacePath
+    workspaceContainer = "/workspace"
+    uiHostPort         = $resolvedUiPort
+    mcpName            = $McpName
+    skillName          = $SkillName
+    installDir         = $CliInstallDir
 }
-Write-Step "Wiring MCP server '$McpName' -> docker exec"
+Write-JsonFile $CliConfigPath $cliConfig
+
+$userPathForCli = [Environment]::GetEnvironmentVariable("PATH", "User")
+if (-not $userPathForCli) { $userPathForCli = "" }
+if (($userPathForCli -split ';') -notcontains $CliInstallDir) {
+    $newUserPath = if ([string]::IsNullOrWhiteSpace($userPathForCli)) { $CliInstallDir } else { "$userPathForCli;$CliInstallDir" }
+    [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
+    Write-Note "added $CliInstallDir to user PATH"
+}
+if (($env:PATH -split ';') -notcontains $CliInstallDir) {
+    $env:PATH = "$env:PATH;$CliInstallDir"
+}
+
+$mcpDef = [pscustomobject]@{
+    command = (Join-Path $CliInstallDir "$CliName.cmd")
+    args    = @("mcp")
+}
+Write-Step "Wiring MCP server '$McpName' -> $CliName mcp"
 Set-McpServer         -Path $McpJson    -Name $McpName -Def $mcpDef
 Set-McpServerSurgical -Path $ClaudeJson -AddName $McpName -AddDef $mcpDef
 
@@ -522,6 +566,7 @@ $containerExists = Test-Container $ContainerName
 $containerRunning = Test-ContainerRunning $ContainerName
 $skillInstalled = Test-Path $skillDst
 $hooksInstalled = (Test-Path (Join-Path $HooksDir "cbm-ds-code-discovery-gate")) -and (Test-Path (Join-Path $HooksDir "cbm-ds-session-reminder"))
+$cliInstalled = (Test-Path (Join-Path $CliInstallDir "$CliName.cmd")) -and (Test-Path $CliConfigPath)
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
@@ -552,6 +597,11 @@ if ($skillInstalled -and $hooksInstalled) {
 } else {
     Write-Warn "skill or hooks are missing; rerun this installer"
 }
+if ($cliInstalled) {
+    Write-Host "  [ok] command '$CliName' installed"
+} else {
+    Write-Warn "host command '$CliName' is missing; rerun this installer"
+}
 
 Write-Host ""
 Write-Host "Port information:" -ForegroundColor Cyan
@@ -559,10 +609,12 @@ Write-Host "  - 3D graph UI URL : $uiUrl"
 Write-Host "  - Host UI port    : $resolvedUiPort"
 Write-Host "  - Container port  : 9749/tcp"
 Write-Host "  - Internal UI port: 9750/tcp inside the container"
-Write-Host "  - MCP transport   : stdio via docker exec (no host TCP port)"
+Write-Host "  - MCP transport   : stdio via $CliName mcp (no host TCP port)"
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  - Restart Claude Code so it reloads skills / hooks / MCP config."
+Write-Host "  - Restart this terminal if '$CliName' is not found on PATH yet."
+Write-Host "  - Useful commands: $CliName status, $CliName ui, $CliName index C:\path\to\repo"
 Write-Host "  - The container starts with an EMPTY index. Re-index your repos, e.g.:"
 Write-Host "      ask the agent to run index_repository(repo_path=\"/workspace/<your-project>\")"
 Write-Host ""

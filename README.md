@@ -25,14 +25,16 @@ Invoke-WebRequest `
 
 .\install.ps1 -WorkspacePath C:/path/to/projects
 ```
-Alternative: Pin an upstream release instead of using latest
-```powershell
-.\install.ps1 -Version v0.8.1
-```
-Optional: publish the UI on a specific host port
-```powershell
-.\install.ps1 -UiPort 9751
-```
+
+Optional:
+- Pin an upstream release instead of using latest
+  ```powershell
+  .\install.ps1 -Version v0.8.1
+  ```
+- publish the UI on a specific host port
+  ```powershell
+  .\install.ps1 -UiPort 9751
+  ```
 
 ```powershell
 # Manual Docker flow
@@ -54,6 +56,41 @@ Restart your agent after installation so it reloads MCP config, hooks, and the
 
 `-WorkspacePath` and `CBM_WORKSPACE` are host paths. MCP tools must use paths
 under the container mount `/workspace`.
+
+## Host Command
+
+The installer adds `codebase-memory-mcp-ds` to your user PATH. Restart the
+terminal if the command is not found immediately after install.
+
+```powershell
+codebase-memory-mcp-ds status
+codebase-memory-mcp-ds ui
+codebase-memory-mcp-ds index C:/Workspace/my-repo
+codebase-memory-mcp-ds projects
+codebase-memory-mcp-ds cli search_graph '{"label":"Function","name_pattern":".*Handler.*"}'
+```
+
+Useful commands:
+
+- `mcp`: run the MCP stdio server through `docker exec`; this is what agent
+  config uses.
+- `cli <tool> [json]`: invoke one upstream MCP tool inside the container.
+- `index <path>`: convert a host path under `-WorkspacePath` to `/workspace/...`
+  and call `index_repository`.
+- `status` / `doctor`: check Docker, container, UI, workspace, and wrapper
+  configuration.
+- `ui` / `port`: print the actual graph UI URL and port mapping.
+- `logs`, `start`, `stop`, `restart`: manage the DS container.
+- `config <list|get|set|reset>`: manage upstream runtime config in the Docker
+  volume.
+- `update [version]`: DS-specific update; rebuilds the Docker image and runs
+  `docker compose up -d`.
+- `uninstall [-y] [--volumes] [--image] [--keep-cli]`: DS-specific uninstall;
+  removes DS resources only and leaves any upstream local install alone.
+
+The wrapper intentionally does not support upstream `install` or UI flags such
+as `--ui=true --port=9749`. Use `install.ps1` for host agent setup and
+`install.ps1 -UiPort <port>` for the host UI port.
 
 ## Known Limitations / Notes
 
@@ -105,6 +142,7 @@ Host browser
   -> codebase-memory-mcp --ui=true
 
 Agent MCP client
+  -> codebase-memory-mcp-ds mcp
   -> docker exec -i codebase-memory-ds codebase-memory-mcp --ui=false
 
 Host source root
@@ -127,8 +165,9 @@ Named cache volume
   `CBM_UI_PORT`.
 - `install.ps1`: Windows installer. It resolves or downloads this repo, sets
   `CBM_WORKSPACE` and `CBM_UI_PORT`, runs `docker compose build` and `up -d`,
-  installs the `codebase-memory-ds` skill and hooks, registers the MCP server
-  through `docker exec`, and optionally removes an old upstream local install.
+  installs the `codebase-memory-ds` skill, hooks, and host command, registers
+  the MCP server through `codebase-memory-mcp-ds mcp`, and optionally removes
+  an old upstream local install.
 - `agent/skills/codebase-memory-ds/SKILL.md`: vendored agent skill text,
   renamed for this Docker edition.
 - `agent/hooks/cbm-ds-code-discovery-gate`: Docker-aware PreToolUse hook that
