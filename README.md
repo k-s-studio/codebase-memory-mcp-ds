@@ -17,34 +17,33 @@ the published checksums.
 
 ## Quick Start
 
+Choose one host folder Docker may read. This is usually the parent folder where you keep all projects. The default is C:/Workspace, mounted read-only as /workspace.
 ```powershell
 Invoke-WebRequest `
   -Uri https://raw.githubusercontent.com/k-s-studio/codebase-memory-mcp-ds/main/install.ps1 `
   -OutFile install.ps1
 
-# Choose one host folder Docker may read. This is usually the parent folder
-# where you keep all projects. The default is C:/Workspace, mounted read-only
-# as /workspace.
-.\install.ps1
-
-# If your projects are somewhere else:
 .\install.ps1 -WorkspacePath C:/path/to/projects
 ```
-
+Alternative: Pin an upstream release instead of using latest
 ```powershell
-# Pin an upstream release instead of using latest
 .\install.ps1 -Version v0.8.1
+```
+Optional: publish the UI on a specific host port
+```powershell
+.\install.ps1 -UiPort 9751
 ```
 
 ```powershell
 # Manual Docker flow
 $env:CBM_WORKSPACE = "C:/Workspace"
+$env:CBM_UI_PORT = "9749"
 docker compose build --build-arg CBM_VERSION=latest
 docker compose up -d
 ```
 
 ```text
-UI: http://localhost:9749
+UI: installer prints the actual URL; default is http://localhost:9749
 Host source root example: C:/Workspace
 Container source root: /workspace
 MCP repo path example: /workspace/my-repo
@@ -68,6 +67,8 @@ under the container mount `/workspace`.
   builds.
 - The UI and MCP sessions share the same container cache volume.
 - The MCP server exposed to agents is stdio via `docker exec`, not HTTP.
+- The installer prefers UI port 9749, but automatically picks the next free
+  port when 9749 is already in use. Pass `-UiPort` to require a specific port.
 - Hooks are best-effort agent helpers. The PreToolUse hook exits successfully if
   Docker or the container is unavailable.
 
@@ -89,15 +90,16 @@ Remove-Item "$HOME/.claude/hooks/cbm-ds-*" -Force
 `install.ps1` backs up edited JSON files as `*.bak-<timestamp>`. Restore those
 backups if you want to roll back MCP or hook configuration exactly.
 
-Use `.\install.ps1 -SkipCleanup` if you want to keep an existing upstream local
-install while adding this Docker edition.
+`install.ps1` preserves an existing upstream local install by default. Use
+`.\install.ps1 -RemoveLegacy` only when you explicitly want this Docker edition
+to remove the older upstream resources.
 
 ## Container Architecture and File Responsibilities
 
 ```text
 Host browser
-  -> http://localhost:9749
-  -> Docker port 9749
+  -> http://localhost:<host-ui-port>
+  -> Docker published port ${CBM_UI_PORT:-9749}:9749
   -> socat in container
   -> 127.0.0.1:9750
   -> codebase-memory-mcp --ui=true
@@ -118,14 +120,15 @@ Named cache volume
   copies the binary into a Debian runtime image.
 - `docker-entrypoint.sh`: starts the upstream binary with `--ui=true` on an
   internal loopback port, keeps stdin open so the UI process stays alive, and
-  exposes it through `socat` on `0.0.0.0:9749`.
+  exposes it through `socat` on `0.0.0.0:9749` inside the container.
 - `docker-compose.yml`: defines the `codebase-memory-ds` service, image,
-  container name, UI port, cache volume, and read-only workspace mount at
-  `/workspace`.
+  container name, host UI port, cache volume, and read-only workspace mount at
+  `/workspace`. The host UI port defaults to 9749 and can be set with
+  `CBM_UI_PORT`.
 - `install.ps1`: Windows installer. It resolves or downloads this repo, sets
-  `CBM_WORKSPACE`, runs `docker compose build` and `up -d`, installs the
-  `codebase-memory-ds` skill and hooks, registers the MCP server through
-  `docker exec`, and optionally removes an old upstream local install.
+  `CBM_WORKSPACE` and `CBM_UI_PORT`, runs `docker compose build` and `up -d`,
+  installs the `codebase-memory-ds` skill and hooks, registers the MCP server
+  through `docker exec`, and optionally removes an old upstream local install.
 - `agent/skills/codebase-memory-ds/SKILL.md`: vendored agent skill text,
   renamed for this Docker edition.
 - `agent/hooks/cbm-ds-code-discovery-gate`: Docker-aware PreToolUse hook that

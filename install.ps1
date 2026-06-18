@@ -15,8 +15,9 @@
 #        - PreToolUse hook (graph augment) -> routed through `docker exec`
 #        - SessionStart reminder hook (static text)
 #        - skill installed under the name `codebase-memory-ds`
-#   4. (default) Remove the old upstream local install: container, skill, hooks,
-#      MCP entries, the local .exe, PATH entry. Disable with -SkipCleanup.
+#   4. Preserve any upstream/local install by default. If you really want to
+#      replace it, pass -RemoveLegacy to remove the legacy container, skill,
+#      hooks, MCP entries, local .exe, and PATH entry.
 #
 # Everything host-facing is namespaced `codebase-memory-ds` / `cbm-ds-*` so it
 # coexists with (or cleanly replaces) an upstream local install.
@@ -25,7 +26,8 @@
 #   .\install.ps1                              # from a repo checkout, exposes C:/Workspace to Docker
 #   .\install.ps1 -WorkspacePath C:/path/to/projects
 #                                               # expose a different source root to Docker
-#   .\install.ps1 -SkipCleanup                 # keep the old upstream install
+#   .\install.ps1 -UiPort 9751                 # publish the UI on a specific host port
+#   .\install.ps1 -RemoveLegacy                # remove the old upstream install
 #   .\install.ps1 -SkipBuild                   # only (re)wire agents, don't touch docker
 #   .\install.ps1 -Download                    # force download from GitHub even in a checkout
 
@@ -33,12 +35,15 @@
 param(
     [string]$WorkspacePath = "C:/Workspace",
     [string]$Version       = "latest",
+    [ValidateRange(1, 65535)]
+    [int]$UiPort           = 9749,
     [string]$Repo          = "k-s-studio/codebase-memory-mcp-ds",
     [string]$Branch        = "main",
     [string]$SourceDir,
     [switch]$Download,
     [switch]$SkipBuild,
-    [switch]$SkipCleanup
+    [switch]$SkipCleanup,
+    [switch]$RemoveLegacy
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,13 +55,15 @@ $BinInContainer = "codebase-memory-mcp"   # internal binary name inside the imag
 $McpName       = "codebase-memory-ds"
 $SkillName     = "codebase-memory-ds"
 
-# ---- names (old, upstream local install — cleanup targets) ----
+# ---- names (legacy upstream/local install; preserved unless -RemoveLegacy) ----
 $OldContainer  = "codebase-memory-mcp"
 $OldMcpName    = "codebase-memory-mcp"
 $OldSkillName  = "codebase-memory"
 $OldHookFiles  = @("cbm-code-discovery-gate", "cbm-session-reminder")
 $OldExeDir     = Join-Path $env:LOCALAPPDATA "Programs\codebase-memory-mcp"
 $OldVolumes    = @("cbm-cache", "codebase-memory-mcp-dockerservice_cbm-cache")
+$DsHookCommandPatterns = @("*cbm-ds-code-discovery-gate*", "*cbm-ds-session-reminder*")
+$LegacyHookCommandPatterns = @("*cbm-code-discovery-gate*", "*cbm-session-reminder*")
 
 # ---- host config paths ----
 $ClaudeDir   = Join-Path $env:USERPROFILE ".claude"
@@ -209,16 +216,39 @@ function Set-McpServerSurgical {
 }
 
 # ---------- hook wiring (settings.json) ----------
-function Remove-CbmHookEntries {
-    # drop any hook-group whose command points at a cbm-* script (old or ds);
-    # preserves the user's own unrelated hooks.
-    param($arr)
-    if (-not $arr) { return @() }
-    return @($arr | Where-Object {
-        $hasCbm = $false
-        foreach ($h in @($_.hooks)) { if ($h.command -like "*cbm-*") { $hasCbm = $true } }
-        -not $hasCbm
+function Remove-HookEntriesByCommandPattern {
+    # Drop hook groups owned by this installer while preserving unrelated hooks,
+    # including a separately installed upstream/local codebase-memory hook.
+    param($Entries, [string[]]$Patterns)
+    if (-not $Entries) { return @() }
+    return @($Entries | Where-Object {
+        $matched = $false
+        foreach ($h in @($_.hooks)) {
+            foreach ($pattern in $Patterns) {
+                if ($h.command -like $pattern) { $matched = $true }
+            }
+        }
+        -not $matched
     })
+}
+
+function Remove-RegisteredHooks {
+    param([string]$Path, [string[]]$Patterns)
+    $root = Read-JsonFile $Path
+    if ($null -eq $root) { return }
+    if (-not ($root.PSObject.Properties.Name -contains 'hooks')) { return }
+    Ensure-Prop $root.hooks 'PreToolUse'   @()
+    Ensure-Prop $root.hooks 'SessionStart' @()
+
+    $oldPre = @($root.hooks.PreToolUse)
+    $oldSs  = @($root.hooks.SessionStart)
+    $pre = @(Remove-HookEntriesByCommandPattern -Entries $oldPre -Patterns $Patterns)
+    $ss  = @(Remove-HookEntriesByCommandPattern -Entries $oldSs  -Patterns $Patterns)
+
+    if (($pre.Count -eq $oldPre.Count) -and ($ss.Count -eq $oldSs.Count)) { return }
+    $root.hooks.PreToolUse   = @($pre)
+    $root.hooks.SessionStart = @($ss)
+    Write-JsonFile $Path $root
 }
 
 function Wire-Hooks {
@@ -234,8 +264,8 @@ function Wire-Hooks {
 
     # @(...) guards against PowerShell collapsing an empty pipeline result to
     # $null (which would turn the first `+=` into a scalar assignment).
-    $pre = @(Remove-CbmHookEntries $root.hooks.PreToolUse)
-    $ss  = @(Remove-CbmHookEntries $root.hooks.SessionStart)
+    $pre = @(Remove-HookEntriesByCommandPattern -Entries $root.hooks.PreToolUse -Patterns $DsHookCommandPatterns)
+    $ss  = @(Remove-HookEntriesByCommandPattern -Entries $root.hooks.SessionStart -Patterns $DsHookCommandPatterns)
 
     if (-not $RemoveOnly) {
         $pre += [pscustomobject]@{
@@ -257,15 +287,82 @@ function Wire-Hooks {
 
 # ---------- docker helpers ----------
 function Test-Container { param([string]$Name) return [bool](docker ps -aq -f "name=^$Name$") }
+function Test-ContainerRunning { param([string]$Name) return [bool](docker ps -q -f "name=^$Name$") }
+
+function Get-ContainerPublishedPort {
+    param([string]$Name, [int]$ContainerPort)
+    try {
+        $published = docker port $Name "$ContainerPort/tcp" 2>$null | Select-Object -First 1
+        if ($published -match ':(\d+)$') { return [int]$Matches[1] }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
+function Test-TcpPortAvailable {
+    param([int]$Port)
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) { $listener.Stop() }
+    }
+}
+
+function Resolve-UiHostPort {
+    param(
+        [int]$PreferredPort,
+        $ExistingDsPort,
+        [bool]$AllowFallback
+    )
+    if (($null -ne $ExistingDsPort) -and ([int]$ExistingDsPort -eq $PreferredPort)) {
+        return $PreferredPort
+    }
+    if (Test-TcpPortAvailable $PreferredPort) {
+        return $PreferredPort
+    }
+    if (-not $AllowFallback) {
+        throw "host UI port $PreferredPort is already in use. Choose another port with -UiPort or stop the process using it."
+    }
+
+    for ($candidate = $PreferredPort + 1; $candidate -le 65535 -and $candidate -le ($PreferredPort + 100); $candidate++) {
+        if (Test-TcpPortAvailable $candidate) {
+            return $candidate
+        }
+    }
+    throw "could not find a free UI host port near $PreferredPort. Pass -UiPort with an available port."
+}
+
+function Test-HttpEndpoint {
+    param([string]$Url)
+    try {
+        Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
 
 # ============================================================
+if ($SkipCleanup) { $RemoveLegacy = $false }
+$uiPortWasSpecified = $PSBoundParameters.ContainsKey('UiPort')
+$resolvedUiPort = $UiPort
+$legacyMode = if ($RemoveLegacy) { "remove upstream/local install" } else { "preserve upstream/local install" }
+
 Write-Host ""
 Write-Host "codebase-memory-mcp-ds installer (Docker edition)" -ForegroundColor Green
 Write-Host "  container : $ContainerName"
 Write-Host "  version   : $Version  (upstream release fetched at build time)"
 Write-Host "  workspace : $WorkspacePath  (mounted read-only at /workspace)"
-Write-Host "  cleanup   : $((-not $SkipCleanup))"
+Write-Host "  UI port   : $UiPort"
+Write-Host "  legacy    : $legacyMode"
 Write-Host ""
+if ($SkipCleanup) { Write-Warn "-SkipCleanup is deprecated; legacy installs are preserved unless -RemoveLegacy is set." }
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "docker not found on PATH. Install Docker Desktop and retry."
@@ -299,20 +396,36 @@ foreach ($p in @($skillSrc, (Join-Path $hookSrc "cbm-ds-code-discovery-gate"), (
 
 # ---------- 2. build + up ----------
 if (-not $SkipBuild) {
-    # Free port 9749 first: the old container binds it and would block `up`.
-    if (Test-Container $OldContainer) {
-        Write-Step "Stopping old container '$OldContainer' (frees port 9749)"
-        if ($SkipCleanup) { docker stop $OldContainer | Out-Null }
-        else              { docker rm -f $OldContainer | Out-Null }
+    if ($RemoveLegacy -and (Test-Container $OldContainer)) {
+        Write-Step "Removing legacy container '$OldContainer'"
+        docker rm -f $OldContainer | Out-Null
+    } elseif (Test-Container $OldContainer) {
+        Write-Note "legacy container '$OldContainer' preserved; selecting a non-conflicting UI port if needed"
+    }
+
+    $existingDsUiPort = Get-ContainerPublishedPort -Name $ContainerName -ContainerPort 9749
+    $canReuseExistingDsPort = $existingDsUiPort -and (
+        (Test-ContainerRunning $ContainerName) -or
+        (Test-TcpPortAvailable $existingDsUiPort)
+    )
+    if ((-not $uiPortWasSpecified) -and $canReuseExistingDsPort) {
+        $resolvedUiPort = $existingDsUiPort
+        Write-Note "reusing existing UI host port $resolvedUiPort"
+    } else {
+        $resolvedUiPort = Resolve-UiHostPort -PreferredPort $UiPort -ExistingDsPort $existingDsUiPort -AllowFallback $(-not $uiPortWasSpecified)
+        if ($resolvedUiPort -ne $UiPort) {
+            Write-Warn "host UI port $UiPort is unavailable; using $resolvedUiPort instead"
+        }
     }
 
     Write-Step "docker compose build (fetches upstream UI binary, version=$Version)"
     Push-Location $src
     try {
         $env:CBM_WORKSPACE = $WorkspacePath
+        $env:CBM_UI_PORT = [string]$resolvedUiPort
         docker compose build --build-arg CBM_VERSION=$Version
         if ($LASTEXITCODE -ne 0) { throw "docker compose build failed" }
-        Write-Step "docker compose up -d"
+        Write-Step "docker compose up -d (UI host port=$resolvedUiPort)"
         docker compose up -d
         if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
     } finally {
@@ -324,10 +437,12 @@ if (-not $SkipBuild) {
     if (-not (docker ps -q -f "name=^$ContainerName$")) {
         Write-Warn "container '$ContainerName' is not running yet; check 'docker logs $ContainerName'"
     } else {
-        Write-Note "container '$ContainerName' is up (UI on http://localhost:9749)"
+        Write-Note "container '$ContainerName' is up (UI on http://localhost:$resolvedUiPort)"
     }
 } else {
     Write-Step "Skipping docker build/up (-SkipBuild)"
+    $existingDsUiPort = Get-ContainerPublishedPort -Name $ContainerName -ContainerPort 9749
+    if ($existingDsUiPort) { $resolvedUiPort = $existingDsUiPort }
 }
 
 # ---------- 3. wire agents on the host ----------
@@ -353,9 +468,9 @@ Write-Step "Wiring MCP server '$McpName' -> docker exec"
 Set-McpServer         -Path $McpJson    -Name $McpName -Def $mcpDef
 Set-McpServerSurgical -Path $ClaudeJson -AddName $McpName -AddDef $mcpDef
 
-# ---------- 4. cleanup old upstream install ----------
-if (-not $SkipCleanup) {
-    Write-Step "Removing old upstream install"
+# ---------- 4. optional legacy upstream/local cleanup ----------
+if ($RemoveLegacy) {
+    Write-Step "Removing legacy upstream/local install (-RemoveLegacy)"
 
     if (Test-Container $OldContainer) {
         docker rm -f $OldContainer | Out-Null
@@ -372,28 +487,82 @@ if (-not $SkipCleanup) {
         $p = Join-Path $HooksDir $h
         if (Test-Path $p) { Remove-Item $p -Force; Write-Note "removed hook '$h'" }
     }
+    Remove-RegisteredHooks -Path $SettingsJson -Patterns $LegacyHookCommandPatterns
 
-    # old MCP entries (filter in Wire-Hooks already dropped old hook *registrations*)
     Set-McpServer         -Path $McpJson    -Name $OldMcpName -Remove
     Set-McpServerSurgical -Path $ClaudeJson -RemoveNames @($OldMcpName)
 
-    if (Test-Path $OldExeDir) { Remove-Item $OldExeDir -Recurse -Force; Write-Note "removed local exe dir $OldExeDir" }
+    $oldExeRemoved = $true
+    if (Test-Path $OldExeDir) {
+        try {
+            Remove-Item $OldExeDir -Recurse -Force -ErrorAction Stop
+            Write-Note "removed local exe dir $OldExeDir"
+        } catch {
+            $oldExeRemoved = $false
+            Write-Warn "could not remove local exe dir $OldExeDir; close running processes and remove it manually if desired. $($_.Exception.Message)"
+        }
+    }
 
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    if ($userPath -and $userPath -like "*$OldExeDir*") {
+    if ($oldExeRemoved -and $userPath -and $userPath -like "*$OldExeDir*") {
         $newPath = ($userPath -split ';' | Where-Object { $_ -and ($_ -ne $OldExeDir) }) -join ';'
         [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
         Write-Note "removed old exe dir from user PATH"
     }
 } else {
-    Write-Step "Skipping cleanup (-SkipCleanup): old upstream install left in place"
+    Write-Step "Preserving legacy upstream/local install"
+    Write-Note "pass -RemoveLegacy to remove old codebase-memory-mcp resources"
 }
 
-# ---------- done ----------
+# ---------- done + post-install check ----------
+$publishedUiPort = Get-ContainerPublishedPort -Name $ContainerName -ContainerPort 9749
+if ($publishedUiPort) { $resolvedUiPort = $publishedUiPort }
+$uiUrl = "http://localhost:$resolvedUiPort"
+$containerExists = Test-Container $ContainerName
+$containerRunning = Test-ContainerRunning $ContainerName
+$skillInstalled = Test-Path $skillDst
+$hooksInstalled = (Test-Path (Join-Path $HooksDir "cbm-ds-code-discovery-gate")) -and (Test-Path (Join-Path $HooksDir "cbm-ds-session-reminder"))
+
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
+Write-Host ""
+Write-Host "Post-install check:" -ForegroundColor Cyan
+if ($containerRunning) {
+    Write-Host "  [ok] container '$ContainerName' is running"
+} elseif ($containerExists) {
+    Write-Warn "container '$ContainerName' exists but is not running; check: docker logs $ContainerName"
+} else {
+    Write-Warn "container '$ContainerName' was not found"
+}
+
+if ($publishedUiPort) {
+    Write-Host "  [ok] UI published on host port $publishedUiPort"
+} else {
+    Write-Warn "UI port mapping was not found; check: docker port $ContainerName"
+}
+
+if ($containerRunning -and $publishedUiPort -and (Test-HttpEndpoint $uiUrl)) {
+    Write-Host "  [ok] UI responds at $uiUrl"
+} elseif ($containerRunning -and $publishedUiPort) {
+    Write-Warn "UI did not respond yet at $uiUrl; it may still be starting"
+}
+
+if ($skillInstalled -and $hooksInstalled) {
+    Write-Host "  [ok] skill and hooks installed"
+} else {
+    Write-Warn "skill or hooks are missing; rerun this installer"
+}
+
+Write-Host ""
+Write-Host "Port information:" -ForegroundColor Cyan
+Write-Host "  - 3D graph UI URL : $uiUrl"
+Write-Host "  - Host UI port    : $resolvedUiPort"
+Write-Host "  - Container port  : 9749/tcp"
+Write-Host "  - Internal UI port: 9750/tcp inside the container"
+Write-Host "  - MCP transport   : stdio via docker exec (no host TCP port)"
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  - Restart Claude Code so it reloads skills / hooks / MCP config."
 Write-Host "  - The container starts with an EMPTY index. Re-index your repos, e.g.:"
 Write-Host "      ask the agent to run index_repository(repo_path=\"/workspace/<your-project>\")"
-Write-Host "  - 3D graph UI: http://localhost:9749"
 Write-Host ""

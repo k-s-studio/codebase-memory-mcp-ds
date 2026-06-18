@@ -6,10 +6,10 @@ services:
         CBM_VERSION: latest
     image: codebase-memory-ds:ui-local
     container_name: codebase-memory-ds
-    # 3D 知識圖譜 UI。容器內 socat 監聽 0.0.0.0:9749 並轉到 UI 的 loopback port，
-    # 開瀏覽器到 http://localhost:9749 即可。
+    # Host UI port is configurable via CBM_UI_PORT; container socat still
+    # listens on 0.0.0.0:9749 and forwards to the loopback-only UI server.
     ports:
-      - "9749:9749"
+      - "${CBM_UI_PORT:-9749}:9749"
     volumes:
       # 索引快取持久化，避免每次重建 container 都要重新索引
       - cbm-ds-cache:/home/cbm/.cache/codebase-memory-mcp
