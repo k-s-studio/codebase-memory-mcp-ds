@@ -124,8 +124,13 @@ Remove-Item "$HOME/.claude/skills/codebase-memory-ds" -Recurse -Force
 Remove-Item "$HOME/.claude/hooks/cbm-ds-*" -Force
 ```
 
-`install.ps1` backs up edited JSON files as `*.bak-<timestamp>`. Restore those
-backups if you want to roll back MCP or hook configuration exactly.
+If you use Codex, `install.ps1` edits `~/.codex/config.toml` in place. Remove the
+`[mcp_servers.codebase-memory-ds]` table and the
+`# >>> codebase-memory-ds SessionStart >>>` ... `# <<< codebase-memory-ds
+SessionStart <<<` block to undo it, or run `codebase-memory-mcp-ds uninstall`.
+
+`install.ps1` backs up edited JSON and `config.toml` files as `*.bak-<timestamp>`.
+Restore those backups if you want to roll back MCP or hook configuration exactly.
 
 `install.ps1` preserves an existing upstream local install by default. Use
 `.\install.ps1 -RemoveLegacy` only when you explicitly want this Docker edition
@@ -167,7 +172,9 @@ Named cache volume
   `CBM_WORKSPACE` and `CBM_UI_PORT`, runs `docker compose build` and `up -d`,
   installs the `codebase-memory-ds` skill, hooks, and host command, registers
   the MCP server through `codebase-memory-mcp-ds mcp`, and optionally removes
-  an old upstream local install.
+  an old upstream local install. If a Codex install is detected (`~/.codex`
+  exists), it also registers the MCP server and a SessionStart hook in
+  `~/.codex/config.toml`, mirroring upstream's Codex wiring.
 - `agent/skills/codebase-memory-ds/SKILL.md`: vendored agent skill text,
   renamed for this Docker edition.
 - `agent/hooks/cbm-ds-code-discovery-gate`: Docker-aware PreToolUse hook that

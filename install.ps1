@@ -16,6 +16,8 @@
 #        - SessionStart reminder hook (static text)
 #        - skill installed under the name `codebase-memory-ds`
 #        - host wrapper command installed as `codebase-memory-mcp-ds`
+#        - Codex: if ~/.codex exists, register the MCP server and a
+#          SessionStart hook in ~/.codex/config.toml (mirrors upstream cli.c)
 #   4. Preserve any upstream/local install by default. If you really want to
 #      replace it, pass -RemoveLegacy to remove the legacy container, skill,
 #      hooks, MCP entries, local .exe, and PATH entry.
@@ -79,6 +81,21 @@ $ClaudeJson  = Join-Path $env:USERPROFILE ".claude.json"
 $SettingsJson= Join-Path $ClaudeDir "settings.json"
 $SkillsDir   = Join-Path $ClaudeDir "skills"
 $HooksDir    = Join-Path $ClaudeDir "hooks"
+
+# ---- Codex host config (TOML; only wired when ~/.codex exists) ----
+# Upstream registers Codex in ~/.codex/config.toml: an [mcp_servers.<name>] table
+# plus a marker-wrapped [[hooks.SessionStart]] block. We mirror that flow but key
+# the resources off the DS names so they stay distinct from an upstream install.
+$CodexDir         = Join-Path $env:USERPROFILE ".codex"
+$CodexConfigToml  = Join-Path $CodexDir "config.toml"
+$CodexMcpSection  = "[mcp_servers.$McpName]"
+$CodexHookBegin   = "# >>> $McpName SessionStart >>>"
+$CodexHookEnd     = "# <<< $McpName SessionStart <<<"
+$CodexReminderCmd = 'echo "Code discovery: prefer codebase-memory-ds tools (search_graph, trace_path, get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository first if the project is not indexed."'
+# legacy upstream Codex resources (removed only with -RemoveLegacy)
+$OldCodexMcpSection = "[mcp_servers.$OldMcpName]"
+$OldCodexHookBegin  = "# >>> $OldMcpName SessionStart >>>"
+$OldCodexHookEnd    = "# <<< $OldMcpName SessionStart <<<"
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
@@ -290,6 +307,102 @@ function Wire-Hooks {
     $root.hooks.PreToolUse   = @($pre)
     $root.hooks.SessionStart = @($ss)
     Write-JsonFile $Path $root
+}
+
+# ---------- Codex wiring (~/.codex/config.toml, TOML; upstream-compatible) ----------
+# Codex config is TOML, not JSON, so we edit only our own section/marker block in
+# place and leave the rest of the file untouched (mirrors upstream's in-place
+# splice in src/cli/cli.c).
+function Remove-CodexMcpSection {
+    # Strip "[mcp_servers.<name>]" and its body up to the next "[" header or EOF.
+    param([string]$Text, [string]$Header)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $idx = $Text.IndexOf($Header)
+    if ($idx -lt 0) { return $Text }
+    $nextIdx = $Text.IndexOf("`n[", $idx + $Header.Length)
+    $prefix = $Text.Substring(0, $idx).TrimEnd("`r", "`n")
+    $suffix = if ($nextIdx -ge 0) { $Text.Substring($nextIdx + 1) } else { "" }
+    if ($prefix -and $suffix) { return "$prefix`n$suffix" }
+    return "$prefix$suffix"
+}
+
+function Remove-CodexHookBlock {
+    # Strip everything from the begin marker through the end marker (inclusive).
+    param([string]$Text, [string]$BeginMarker, [string]$EndMarker)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $b = $Text.IndexOf($BeginMarker)
+    if ($b -lt 0) { return $Text }
+    $e = $Text.IndexOf($EndMarker, $b)
+    if ($e -lt 0) { return $Text }   # malformed/half-written; leave as-is
+    $prefix = $Text.Substring(0, $b).TrimEnd("`r", "`n")
+    $suffix = $Text.Substring($e + $EndMarker.Length).TrimStart("`r", "`n")
+    if ($prefix -and $suffix) { return "$prefix`n$suffix" }
+    return "$prefix$suffix"
+}
+
+function Wire-Codex {
+    param([switch]$RemoveOnly)
+    # Detection mirrors upstream: only touch Codex if the user actually has ~/.codex.
+    if (-not (Test-Path $CodexDir)) {
+        if (-not $RemoveOnly) { Write-Note "Codex not detected (~/.codex absent); skipping Codex wiring" }
+        return
+    }
+    if ($RemoveOnly -and -not (Test-Path $CodexConfigToml)) { return }
+    $text = if (Test-Path $CodexConfigToml) { [System.IO.File]::ReadAllText($CodexConfigToml) } else { "" }
+    $orig = $text
+
+    # Always strip our own entries first (idempotent upsert / clean removal).
+    $text = Remove-CodexHookBlock  -Text $text -BeginMarker $CodexHookBegin -EndMarker $CodexHookEnd
+    $text = Remove-CodexMcpSection -Text $text -Header $CodexMcpSection
+
+    if (-not $RemoveOnly) {
+        # TOML basic string for the path: double every backslash ("\" is an escape).
+        $cmdEscaped = (Join-Path $CliInstallDir "$CliName.cmd") -replace '\\', '\\'
+        $mcpBlock = @(
+            $CodexMcpSection
+            "command = `"$cmdEscaped`""
+            'args = ["mcp"]'
+        ) -join "`n"
+        # Hook command uses a TOML literal string ('...') so the inner double
+        # quotes in the echo need no escaping (matches upstream's '%s').
+        $hookBlock = @(
+            $CodexHookBegin
+            '[[hooks.SessionStart]]'
+            'matcher = "startup|resume|clear|compact"'
+            ''
+            '[[hooks.SessionStart.hooks]]'
+            'type = "command"'
+            "command = '$CodexReminderCmd'"
+            $CodexHookEnd
+        ) -join "`n"
+
+        $text = $text.TrimEnd("`r", "`n")
+        $sep = if ($text) { "`n`n" } else { "" }
+        $text = "$text$sep$mcpBlock`n`n$hookBlock`n"
+    }
+
+    if ($text -eq $orig) { return }   # nothing changed, don't rewrite
+    if (Test-Path $CodexConfigToml) {
+        $bak = "$CodexConfigToml.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+        Copy-Item $CodexConfigToml $bak -Force
+        Write-Note "backed up config.toml -> $([System.IO.Path]::GetFileName($bak))"
+    }
+    [System.IO.File]::WriteAllText($CodexConfigToml, $text, $Utf8NoBom)
+}
+
+function Remove-CodexLegacy {
+    # Strip an upstream/local install's Codex entries (only under -RemoveLegacy).
+    if (-not (Test-Path $CodexConfigToml)) { return }
+    $text = [System.IO.File]::ReadAllText($CodexConfigToml)
+    $orig = $text
+    $text = Remove-CodexHookBlock  -Text $text -BeginMarker $OldCodexHookBegin -EndMarker $OldCodexHookEnd
+    $text = Remove-CodexMcpSection -Text $text -Header $OldCodexMcpSection
+    if ($text -eq $orig) { return }
+    $bak = "$CodexConfigToml.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    Copy-Item $CodexConfigToml $bak -Force
+    Write-Note "backed up config.toml -> $([System.IO.Path]::GetFileName($bak))"
+    [System.IO.File]::WriteAllText($CodexConfigToml, $text, $Utf8NoBom)
+    Write-Note "removed legacy Codex MCP/hook entries from config.toml"
 }
 
 # ---------- docker helpers ----------
@@ -525,6 +638,9 @@ Write-Step "Wiring MCP server '$McpName' -> $CliName mcp"
 Set-McpServer         -Path $McpJson    -Name $McpName -Def $mcpDef
 Set-McpServerSurgical -Path $ClaudeJson -AddName $McpName -AddDef $mcpDef
 
+Write-Step "Wiring Codex MCP/hook in ~/.codex/config.toml (if Codex is installed)"
+Wire-Codex
+
 # ---------- 4. optional legacy upstream/local cleanup ----------
 if ($RemoveLegacy) {
     Write-Step "Removing legacy upstream/local install (-RemoveLegacy)"
@@ -548,6 +664,7 @@ if ($RemoveLegacy) {
 
     Set-McpServer         -Path $McpJson    -Name $OldMcpName -Remove
     Set-McpServerSurgical -Path $ClaudeJson -RemoveNames @($OldMcpName)
+    Remove-CodexLegacy
 
     $oldExeRemoved = $true
     if (Test-Path $OldExeDir) {
@@ -580,6 +697,8 @@ $containerRunning = Test-ContainerRunning $ContainerName
 $skillInstalled = Test-Path $skillDst
 $hooksInstalled = (Test-Path (Join-Path $HooksDir "cbm-ds-code-discovery-gate")) -and (Test-Path (Join-Path $HooksDir "cbm-ds-session-reminder"))
 $cliInstalled = (Test-Path (Join-Path $CliInstallDir "$CliName.cmd")) -and (Test-Path $CliConfigPath)
+$codexPresent = Test-Path $CodexDir
+$codexConfigured = $codexPresent -and (Test-Path $CodexConfigToml) -and ([System.IO.File]::ReadAllText($CodexConfigToml) -like "*$CodexMcpSection*")
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
@@ -614,6 +733,13 @@ if ($cliInstalled) {
     Write-Host "  [ok] command '$CliName' installed"
 } else {
     Write-Warn "host command '$CliName' is missing; rerun this installer"
+}
+if ($codexPresent) {
+    if ($codexConfigured) {
+        Write-Host "  [ok] Codex MCP/hook registered in ~/.codex/config.toml"
+    } else {
+        Write-Warn "Codex detected but MCP entry is missing; rerun this installer"
+    }
 }
 
 Write-Host ""

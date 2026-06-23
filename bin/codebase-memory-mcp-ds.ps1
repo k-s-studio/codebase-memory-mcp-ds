@@ -224,6 +224,48 @@ function Remove-PathEntry {
     }
 }
 
+function Remove-CodexConfigEntries {
+    # Strip the DS [mcp_servers.<name>] table and the marker-wrapped SessionStart
+    # hook block from ~/.codex/config.toml. Edits only our own entries in place.
+    $configPath = Join-Path $env:USERPROFILE ".codex\config.toml"
+    if (-not (Test-Path $configPath)) { return }
+    $name = $Cfg.mcpName
+    $section = "[mcp_servers.$name]"
+    $hookBegin = "# >>> $name SessionStart >>>"
+    $hookEnd   = "# <<< $name SessionStart <<<"
+    try {
+        $text = [System.IO.File]::ReadAllText($configPath)
+        $orig = $text
+
+        $b = $text.IndexOf($hookBegin)
+        if ($b -ge 0) {
+            $e = $text.IndexOf($hookEnd, $b)
+            if ($e -ge 0) {
+                $prefix = $text.Substring(0, $b).TrimEnd("`r", "`n")
+                $suffix = $text.Substring($e + $hookEnd.Length).TrimStart("`r", "`n")
+                $text = if ($prefix -and $suffix) { "$prefix`n$suffix" } else { "$prefix$suffix" }
+            }
+        }
+
+        $idx = $text.IndexOf($section)
+        if ($idx -ge 0) {
+            $nextIdx = $text.IndexOf("`n[", $idx + $section.Length)
+            $prefix = $text.Substring(0, $idx).TrimEnd("`r", "`n")
+            $suffix = if ($nextIdx -ge 0) { $text.Substring($nextIdx + 1) } else { "" }
+            $text = if ($prefix -and $suffix) { "$prefix`n$suffix" } else { "$prefix$suffix" }
+        }
+
+        if ($text -eq $orig) { return }
+        $bak = "$configPath.bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+        Copy-Item $configPath $bak -Force
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($configPath, $text, $utf8NoBom)
+        Write-Host "removed Codex MCP/hook entries from $configPath"
+    } catch {
+        Write-Err "warning: could not update $configPath. $($_.Exception.Message)"
+    }
+}
+
 function Remove-DsHookRegistrations {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return }
@@ -359,6 +401,7 @@ function Invoke-Uninstall {
     Remove-McpServerFromJson -Path (Join-Path $home ".claude\.mcp.json") -Name $Cfg.mcpName
     Remove-McpServerFromJson -Path (Join-Path $home ".claude.json") -Name $Cfg.mcpName
     Remove-DsHookRegistrations -Path (Join-Path $home ".claude\settings.json")
+    Remove-CodexConfigEntries
 
     $skillPath = Join-Path $home ".claude\skills\$($Cfg.skillName)"
     if (Test-Path $skillPath) {
