@@ -698,7 +698,7 @@ $skillInstalled = Test-Path $skillDst
 $hooksInstalled = (Test-Path (Join-Path $HooksDir "cbm-ds-code-discovery-gate")) -and (Test-Path (Join-Path $HooksDir "cbm-ds-session-reminder"))
 $cliInstalled = (Test-Path (Join-Path $CliInstallDir "$CliName.cmd")) -and (Test-Path $CliConfigPath)
 $codexPresent = Test-Path $CodexDir
-$codexConfigured = $codexPresent -and (Test-Path $CodexConfigToml) -and ([System.IO.File]::ReadAllText($CodexConfigToml) -like "*$CodexMcpSection*")
+$codexConfigured = $codexPresent -and (Test-Path $CodexConfigToml) -and ([System.IO.File]::ReadAllText($CodexConfigToml).Contains($CodexMcpSection))
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
