@@ -1,0 +1,15 @@
+model = ""
+model_reasoning_effort = ""
+
+[mcp_servers.codebase-memory-ds]
+command = "C:\\Users\\%Username%\\AppData\\Local\\Programs\\codebase-memory-mcp-ds\\codebase-memory-mcp-ds.cmd"
+args = ["mcp"]
+
+# >>> codebase-memory-ds SessionStart >>>
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = 'echo "Code discovery: prefer codebase-memory-ds tools (search_graph, trace_path, get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository first if the project is not indexed."'
+# <<< codebase-memory-ds SessionStart <<<

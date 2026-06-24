@@ -1,0 +1,20 @@
+model = ""
+model_reasoning_effort = ""
+
+[mcp_servers.codebase-memory-ds]
+command = "C:\\Users\\%Username%\\AppData\\Local\\Programs\\codebase-memory-mcp-ds\\codebase-memory-mcp-ds.cmd"
+args = ["mcp"]
+
+# >>> codebase-memory-ds SessionStart >>>
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = 'echo "Code discovery: prefer codebase-memory-ds tools (search_graph, trace_path, get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository first if the project is not indexed."'
+
+[hooks.state]
+
+[hooks.state.'C:\Users\%Username%\.codex\config.toml:session_start:1:0']
+trusted_hash = "sha256:e47cbcbd23863b4321176afcd2cee3325f40c603980638b4d50e8cde90567526"
+# <<< codebase-memory-ds SessionStart <<<
