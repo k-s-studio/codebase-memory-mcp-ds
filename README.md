@@ -125,9 +125,8 @@ Remove-Item "$HOME/.claude/hooks/cbm-ds-*" -Force
 ```
 
 If you use Codex, `install.ps1` edits `~/.codex/config.toml` in place. Remove the
-`[mcp_servers.codebase-memory-ds]` table and the
-`# >>> codebase-memory-ds SessionStart >>>` ... `# <<< codebase-memory-ds
-SessionStart <<<` block to undo it, or run `codebase-memory-mcp-ds uninstall`.
+`[mcp_servers.codebase-memory-ds]` table to undo it, or run
+`codebase-memory-mcp-ds uninstall`.
 
 `install.ps1` backs up edited JSON and `config.toml` files as `*.bak-<timestamp>`.
 Restore those backups if you want to roll back MCP or hook configuration exactly.
@@ -173,8 +172,9 @@ Named cache volume
   installs the `codebase-memory-ds` skill, hooks, and host command, registers
   the MCP server through `codebase-memory-mcp-ds mcp`, and optionally removes
   an old upstream local install. If a Codex install is detected (`~/.codex`
-  exists), it also registers the MCP server and a SessionStart hook in
-  `~/.codex/config.toml`, mirroring upstream's Codex wiring.
+  exists), it also registers the MCP server in `~/.codex/config.toml`
+  (`[mcp_servers.codebase-memory-ds]`). It does not add a Codex SessionStart
+  hook: Codex rewrites that file and would accumulate duplicate hook blocks.
 - `agent/skills/codebase-memory-ds/SKILL.md`: vendored agent skill text,
   renamed for this Docker edition.
 - `agent/hooks/cbm-ds-code-discovery-gate`: Docker-aware PreToolUse hook that

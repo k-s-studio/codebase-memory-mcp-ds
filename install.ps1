@@ -16,8 +16,9 @@
 #        - SessionStart reminder hook (static text)
 #        - skill installed under the name `codebase-memory-ds`
 #        - host wrapper command installed as `codebase-memory-mcp-ds`
-#        - Codex: if ~/.codex exists, register the MCP server and a
-#          SessionStart hook in ~/.codex/config.toml (mirrors upstream cli.c)
+#        - Codex: if ~/.codex exists, register the MCP server in
+#          ~/.codex/config.toml (MCP only; no hook, since Codex rewrites that
+#          file and would duplicate a comment-marked hook block)
 #   4. Preserve any upstream/local install by default. If you really want to
 #      replace it, pass -RemoveLegacy to remove the legacy container, skill,
 #      hooks, MCP entries, local .exe, and PATH entry.
@@ -83,15 +84,18 @@ $SkillsDir   = Join-Path $ClaudeDir "skills"
 $HooksDir    = Join-Path $ClaudeDir "hooks"
 
 # ---- Codex host config (TOML; only wired when ~/.codex exists) ----
-# Upstream registers Codex in ~/.codex/config.toml: an [mcp_servers.<name>] table
-# plus a marker-wrapped [[hooks.SessionStart]] block. We mirror that flow but key
-# the resources off the DS names so they stay distinct from an upstream install.
+# For Codex we register ONLY the MCP server. Codex owns config.toml and rewrites
+# it; its TOML load->serialize round-trip drops our comment markers, so a
+# marker-wrapped [[hooks.SessionStart]] block would accumulate duplicates and
+# resist cleanup (upstream's own Codex hook already does this in the wild). The
+# [mcp_servers.<name>] table is keyed by a real TOML key, so Codex preserves it
+# and re-runs overwrite it cleanly. The hook markers below are kept ONLY so we
+# can strip a SessionStart hook written by an earlier installer version.
 $CodexDir         = Join-Path $env:USERPROFILE ".codex"
 $CodexConfigToml  = Join-Path $CodexDir "config.toml"
 $CodexMcpSection  = "[mcp_servers.$McpName]"
 $CodexHookBegin   = "# >>> $McpName SessionStart >>>"
 $CodexHookEnd     = "# <<< $McpName SessionStart <<<"
-$CodexReminderCmd = 'echo "Code discovery: prefer codebase-memory-ds tools (search_graph, trace_path, get_code_snippet, query_graph, search_code) over grep/file-read; run index_repository first if the project is not indexed."'
 # legacy upstream Codex resources (removed only with -RemoveLegacy)
 $OldCodexMcpSection = "[mcp_servers.$OldMcpName]"
 $OldCodexHookBegin  = "# >>> $OldMcpName SessionStart >>>"
@@ -351,7 +355,9 @@ function Wire-Codex {
     $text = if (Test-Path $CodexConfigToml) { [System.IO.File]::ReadAllText($CodexConfigToml) } else { "" }
     $orig = $text
 
-    # Always strip our own entries first (idempotent upsert / clean removal).
+    # Always strip our own entries first: idempotent upsert, and clean up a
+    # SessionStart hook written by an earlier installer version (we no longer
+    # write that hook for Codex).
     $text = Remove-CodexHookBlock  -Text $text -BeginMarker $CodexHookBegin -EndMarker $CodexHookEnd
     $text = Remove-CodexMcpSection -Text $text -Header $CodexMcpSection
 
@@ -363,22 +369,9 @@ function Wire-Codex {
             "command = `"$cmdEscaped`""
             'args = ["mcp"]'
         ) -join "`n"
-        # Hook command uses a TOML literal string ('...') so the inner double
-        # quotes in the echo need no escaping (matches upstream's '%s').
-        $hookBlock = @(
-            $CodexHookBegin
-            '[[hooks.SessionStart]]'
-            'matcher = "startup|resume|clear|compact"'
-            ''
-            '[[hooks.SessionStart.hooks]]'
-            'type = "command"'
-            "command = '$CodexReminderCmd'"
-            $CodexHookEnd
-        ) -join "`n"
-
         $text = $text.TrimEnd("`r", "`n")
         $sep = if ($text) { "`n`n" } else { "" }
-        $text = "$text$sep$mcpBlock`n`n$hookBlock`n"
+        $text = "$text$sep$mcpBlock`n"
     }
 
     if ($text -eq $orig) { return }   # nothing changed, don't rewrite
@@ -638,7 +631,7 @@ Write-Step "Wiring MCP server '$McpName' -> $CliName mcp"
 Set-McpServer         -Path $McpJson    -Name $McpName -Def $mcpDef
 Set-McpServerSurgical -Path $ClaudeJson -AddName $McpName -AddDef $mcpDef
 
-Write-Step "Wiring Codex MCP/hook in ~/.codex/config.toml (if Codex is installed)"
+Write-Step "Wiring Codex MCP in ~/.codex/config.toml (if Codex is installed)"
 Wire-Codex
 
 # ---------- 4. optional legacy upstream/local cleanup ----------
